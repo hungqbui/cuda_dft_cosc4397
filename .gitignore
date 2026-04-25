@@ -1,0 +1,11 @@
+# Python cache
+__pycache__/
+*.pyc
+
+# Optional (good practice)
+*.pyo
+*.pyd
+
+# Mac / Windows junk
+.DS_Store
+Thumbs.db
