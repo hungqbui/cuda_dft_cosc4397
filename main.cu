@@ -107,6 +107,7 @@ int main(int argc, char** argv) {
     cuDoubleComplex *h_fft_y = new cuDoubleComplex[N];
     cuDoubleComplex *h_fft_inplace_y = new cuDoubleComplex[N];
     cuDoubleComplex *h_fft_precomp_y = new cuDoubleComplex[N];
+    cuDoubleComplex *h_fft_final_y = new cuDoubleComplex[N];
     cuDoubleComplex *h_cufft_y = new cuDoubleComplex[N];
     cuDoubleComplex *h_host_bottomup_y = new cuDoubleComplex[N];
     cuDoubleComplex *h_host_inplace_y = new cuDoubleComplex[N];
@@ -117,12 +118,13 @@ int main(int argc, char** argv) {
     }
 
     // Allocate device memory
-    cuDoubleComplex *d_x, *d_dft_y, *d_fft_y, *d_fft_inplace_y, *d_fft_precomp_y, *d_cufft_y;
+    cuDoubleComplex *d_x, *d_dft_y, *d_fft_y, *d_fft_inplace_y, *d_fft_precomp_y, *d_fft_final_y, *d_cufft_y;
     cudaMalloc((void**)&d_x, size);
     cudaMalloc((void**)&d_dft_y, size);
     cudaMalloc((void**)&d_fft_y, size);
     cudaMalloc((void**)&d_fft_inplace_y, size);
     cudaMalloc((void**)&d_fft_precomp_y, size);
+    cudaMalloc((void**)&d_fft_final_y, size);
     cudaMalloc((void**)&d_cufft_y, size);
 
     // Copy input to device
@@ -132,7 +134,7 @@ int main(int argc, char** argv) {
     cudaEvent_t start, stop;
     cudaEventCreate(&start);
     cudaEventCreate(&stop);
-    float s_dft = 0, s_fft = 0, s_fft_inplace = 0, s_fft_precomp = 0, s_cufft = 0;
+    float s_dft = 0, s_fft = 0, s_fft_inplace = 0, s_fft_precomp = 0, s_fft_final= 0, s_cufft = 0;
     float s_host_bu = 0, s_host_ip = 0;
 
     // ==========================================
@@ -174,6 +176,20 @@ int main(int argc, char** argv) {
     cudaEventElapsedTime(&s_fft_precomp, start, stop);
 
     // ==========================================
+    // 3.8 Custom Final (Bank/Coalesced) Shared FFT
+    // ==========================================
+    cuDoubleComplex* d_W_final;
+    plan_cuda_fft_final(N, &d_W_final);
+    
+    cudaEventRecord(start);
+    run_cuda_fft_final(d_x, d_fft_final_y, d_W_final, N);
+    cudaEventRecord(stop);
+    cudaEventSynchronize(stop);
+    cudaEventElapsedTime(&s_fft_final, start, stop);
+    
+    destroy_cuda_fft_final(d_W_final);
+
+    // ==========================================
     // 4. cuFFT
     // ==========================================
     cufftHandle plan;
@@ -212,12 +228,14 @@ int main(int argc, char** argv) {
     cudaMemcpy(h_fft_y, d_fft_y, size, cudaMemcpyDeviceToHost);
     cudaMemcpy(h_fft_inplace_y, d_fft_inplace_y, size, cudaMemcpyDeviceToHost);
     cudaMemcpy(h_fft_precomp_y, d_fft_precomp_y, size, cudaMemcpyDeviceToHost);
+    cudaMemcpy(h_fft_final_y, d_fft_final_y, size, cudaMemcpyDeviceToHost);
     cudaMemcpy(h_cufft_y, d_cufft_y, size, cudaMemcpyDeviceToHost);
 
     double dft_max_error = 0.0;
     double fft_max_error = 0.0;
     double fft_inplace_max_error = 0.0;
     double fft_precomp_max_error = 0.0;
+    double fft_final_max_error = 0.0;
     double host_bu_max_error = 0.0;
     double host_ip_max_error = 0.0;
 
@@ -242,6 +260,9 @@ int main(int argc, char** argv) {
         err = compute_err(h_fft_precomp_y[i], h_cufft_y[i]);
         if(err > fft_precomp_max_error) fft_precomp_max_error = err;
         
+        err = compute_err(h_fft_final_y[i], h_cufft_y[i]);
+        if(err > fft_final_max_error) fft_final_max_error = err;
+
         err = compute_err(h_host_bottomup_y[i], h_cufft_y[i]);
         if(err > host_bu_max_error) host_bu_max_error = err;
         
@@ -261,6 +282,7 @@ int main(int argc, char** argv) {
     printf("%-26s | %-12.8f | %-12.4e\n", "GPU Naive Merging FFT", s_fft / 1e3, fft_max_error);
     printf("%-26s | %-12.8f | %-12.4e\n", "GPU Shared In-Place FFT", s_fft_inplace / 1e3, fft_inplace_max_error);
     printf("%-26s | %-12.8f | %-12.4e\n", "GPU Shared Precomp FFT", s_fft_precomp / 1e3, fft_precomp_max_error);
+    printf("%-26s | %-12.8f | %-12.4e\n", "GPU Final Optimized FFT", s_fft_final / 1e3, fft_final_max_error);
     printf("%-26s | %-12.8f | %-12s\n", "GPU NVIDIA cuFFT", s_cufft / 1e3, "0.0000e+00");
     printf("======================================\n");
 
@@ -272,11 +294,15 @@ int main(int argc, char** argv) {
     cudaFree(d_dft_y);
     cudaFree(d_fft_y);
     cudaFree(d_fft_inplace_y);
+    cudaFree(d_fft_precomp_y);
+    cudaFree(d_fft_final_y);
     cudaFree(d_cufft_y);
     delete[] h_x;
     delete[] h_dft_y;
     delete[] h_fft_y;
     delete[] h_fft_inplace_y;
+    delete[] h_fft_precomp_y;
+    delete[] h_fft_final_y;
     delete[] h_cufft_y;
     delete[] h_host_bottomup_y;
     delete[] h_host_inplace_y;

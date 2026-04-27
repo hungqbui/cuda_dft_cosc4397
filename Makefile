@@ -2,7 +2,7 @@ NVCC = nvcc
 NVCC_FLAGS = -O3 -lineinfo
 LIBS = -lcufft
 
-CUDA_SRCS = cuda_dftv1.cu cuda_fft.cu main.cu
+CUDA_SRCS = cuda_dftv1.cu cuda_fft.cu cuda_fft_final.cu main.cu
 OBJS = $(CUDA_SRCS:.cu=.o)
 
 TARGET = compare_ffts

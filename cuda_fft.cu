@@ -138,7 +138,6 @@ __global__ void bitReverseKernel(const cuDoubleComplex* d_in, cuDoubleComplex* d
 }
 
 #define COARSE 4
-
 // Tiled shared memory kernel: processes chunks of size B 
 __global__ void cudaFFTSharedTile(cuDoubleComplex* d_out, int N, int B) {
     extern __shared__ cuDoubleComplex s_data[]; 
