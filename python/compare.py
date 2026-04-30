@@ -25,9 +25,10 @@ def compare_dft(x):
     # print("Input:", x)
 
     # Naive DFT
-    t0 = time.time()
-    X_naive = dft_1d(x)
-    naive_time = time.time() - t0
+    if len(x) < 2049:
+        t0 = time.time()
+        X_naive = dft_1d(x)
+        naive_time = time.time() - t0
 
     # OpenCV DFT
     x_cv = to_opencv_format(x)
@@ -37,21 +38,22 @@ def compare_dft(x):
     X_cv_complex = from_opencv_format(X_cv)
 
     # FFT
-    t2 = time.time()
-    X_fft = fft1d(x)
-    fft_time = time.time() - t2
+    if len(x) <= 32768:
+        t2 = time.time()
+        X_fft = fft1d(x)
+        fft_time = time.time() - t2
 
-    t3 = time.time()
-    X_fft_bottomup = fft1d_bottomup(x)
-    fft_bottomup_time = time.time() - t3
+        t3 = time.time()
+        X_fft_bottomup = fft1d_bottomup(x)
+        fft_bottomup_time = time.time() - t3
+
+        t5 = time.time()
+        X_fft_iter_bitmap = fft1d_iter_bitmap(x)
+        fft_iter_bitmap_time = time.time() - t5
 
     t4 = time.time()
     X_scipy = scipy_fft(x)
     scipy_time = time.time() - t4
-
-    t5 = time.time()
-    X_fft_iter_bitmap = fft1d_iter_bitmap(x)
-    fft_iter_bitmap_time = time.time() - t5
     
 
     # Compare
@@ -60,32 +62,40 @@ def compare_dft(x):
     max_error3 = 0.0
     max_error4 = 0.0
 
-    print("\nResults:")
+    if len(x) <= 32768:
+        print("\nResults:")
     for i in range(len(x)):
-        naive = X_naive[i]
         cv = X_cv_complex[i]
-        fft = X_fft[i]
-        error1 = abs(naive - cv)
-        max_error1 = max(max_error1, error1)
-        error2 = abs(fft - cv)
-        max_error2 = max(max_error2, error2)
-        error3 = abs(fft - naive)
-        max_error3 = max(max_error3, error3)
-        error4 = abs(X_fft_iter_bitmap[i] - cv)
-        max_error4 = max(max_error4, error4)
+        if len(x) < 2049:
+            naive = X_naive[i]
+            error1 = abs(naive - cv)
+            max_error1 = max(max_error1, error1)
+        
+        if len(x) <= 32768:
+            fft = X_fft[i]
+            error2 = abs(fft - cv)
+            max_error2 = max(max_error2, error2)
+            error3 = abs(X_fft_bottomup[i] - cv)
+            max_error3 = max(max_error3, error3)
+            error4 = abs(X_fft_iter_bitmap[i] - cv)
+            max_error4 = max(max_error4, error4)
 
 
-    print("Max error Naive:", max_error1)
-    print("Max error FFT:", max_error2)
-    print("Max error FFT (Bottom-up):", max_error3)
-    print("Max error FFT (Bottom-up Bitmap Inplace):", max_error4)
+    if len(x) < 2049:
+        print("Max error Naive:", max_error1)
+    if len(x) <= 32768:
+        print("Max error FFT:", max_error2)
+        print("Max error FFT (Bottom-up):", max_error3)
+        print("Max error FFT (Bottom-up Bitmap Inplace):", max_error4)
     print("\nRuntimes:")
-    print(f"Naive DFT: {naive_time:.8f} seconds")
+    if len(x) < 2049:
+        print(f"Naive DFT: {naive_time:.8f} seconds")
     print(f"OpenCV DFT: {cv_time:.8f} seconds")
     print(f"Scipy FFT: {scipy_time:.8f} seconds")
-    print(f"FFT: {fft_time:.8f} seconds")
-    print(f"FFT (Bottom-up): {fft_bottomup_time:.8f} seconds")
-    print(f"FFT (Bottom-up Bitmap Inplace): {fft_iter_bitmap_time:.8f} seconds")
+    if len(x) <= 32768:
+        print(f"FFT: {fft_time:.8f} seconds")
+        print(f"FFT (Bottom-up): {fft_bottomup_time:.8f} seconds")
+        print(f"FFT (Bottom-up Bitmap Inplace): {fft_iter_bitmap_time:.8f} seconds")
 
 if __name__ == "__main__":
     # Test signal

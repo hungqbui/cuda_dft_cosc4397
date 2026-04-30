@@ -57,7 +57,7 @@ def fft1d_bottomup(x):
                 merged[k + M // 2] = even_fft[k] - t
                 
             next_ffts.append(merged)
-            
+        print(next_ffts)
         ffts = next_ffts
         
     # The final array is our full FFT result

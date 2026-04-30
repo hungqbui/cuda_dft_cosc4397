@@ -49,37 +49,104 @@ __global__ void cudaFFTSharedTileFinal(cuDoubleComplex* d_out, const cuDoubleCom
     
     int tid = threadIdx.x;
     int blockOffset = blockIdx.x * B;
+    int q = B / 4;
     
-    // Load input into shared memory (unchanged)
-    if (blockOffset + tid < N && tid < B / 2) {
-        s_data[PAD(tid)]       = d_out[blockOffset + tid];
-        s_data[PAD(tid + B/2)] = d_out[blockOffset + tid + B/2];
+    // Load input into shared memory (coalesced 4 elements per thread)
+    if (blockOffset + tid < N) {
+        s_data[PAD(tid)]         = d_out[blockOffset + tid];
+        s_data[PAD(tid + q)]     = d_out[blockOffset + tid + q];
+        s_data[PAD(tid + 2 * q)] = d_out[blockOffset + tid + 2 * q];
+        s_data[PAD(tid + 3 * q)] = d_out[blockOffset + tid + 3 * q];
     }
     __syncthreads();
     
-    for (int M = 2; M <= B; M *= 2) {
+    // THREAD COARSENING (M=2 and M=4 in private registers)
+    cuDoubleComplex A[4];
+    A[0] = s_data[PAD(4 * tid)];
+    A[1] = s_data[PAD(4 * tid + 1)];
+    A[2] = s_data[PAD(4 * tid + 2)];
+    A[3] = s_data[PAD(4 * tid + 3)];
+
+    // M=2 Stage
+    cuDoubleComplex t0 = A[1];
+    cuDoubleComplex A1_new = cuCsub(A[0], t0);
+    A[0] = cuCadd(A[0], t0);
+    A[1] = A1_new;
+
+    cuDoubleComplex t1 = A[3];
+    cuDoubleComplex A3_new = cuCsub(A[2], t1);
+    A[2] = cuCadd(A[2], t1);
+    A[3] = A3_new;
+
+    // M=4 Stage
+    cuDoubleComplex t2 = A[2];
+    cuDoubleComplex A2_new = cuCsub(A[0], t2);
+    A[0] = cuCadd(A[0], t2);
+    A[2] = A2_new;
+
+    cuDoubleComplex t3 = make_cuDoubleComplex(A[3].y, -A[3].x); // W_4^1 = -i
+    cuDoubleComplex A3_new2 = cuCsub(A[1], t3);
+    A[1] = cuCadd(A[1], t3);
+    A[3] = A3_new2;
+
+    // Write back registers to Shared Memory
+    s_data[PAD(4 * tid)]     = A[0];
+    s_data[PAD(4 * tid + 1)] = A[1];
+    s_data[PAD(4 * tid + 2)] = A[2];
+    s_data[PAD(4 * tid + 3)] = A[3];
+    __syncthreads();
+    
+    // WARP SYNCHRONOUS PHASE (M=8 to 64)
+    // A warp has 32 threads. Here, each warp processes isolated 64-element blocks.
+    // Data never crosses into other warps, so we replace block barriers with __syncwarp()
+    for (int M = 8; M <= 64; M *= 2) {
         int half_M = M / 2;
         int w_offset = half_M - 1;
         
-        // Cooperatively load this stage's twiddle slice into shared memory.
-        // Only half_M values are needed. All threads participate to keep it fast.
-        // At early stages half_M is tiny (1, 2, 4...) so most threads idle here,
-        // but the coalescing benefit at those stages is highest so it's worth it.
-        if (tid < half_M) {
-            s_twiddle[tid] = W[w_offset + tid];
-        }
-        __syncthreads(); // wait for twiddle load before butterfly
-        
-        if (tid < B / 2) {
-            int group  = tid / half_M;
-            int k      = tid % half_M;
+        for (int step = 0; step < 2; step++) {
+            int vtid = tid + step * q;
+            int group  = vtid / half_M;
+            int k      = vtid % half_M;
             int even_idx = group * M + k;
             int odd_idx  = even_idx + half_M;
             
             cuDoubleComplex a = s_data[PAD(even_idx)];
             cuDoubleComplex b = s_data[PAD(odd_idx)];
             
-            cuDoubleComplex w = s_twiddle[k]; // shared memory read instead of global W
+            // Read twiddle directly from global memory (broadcast instantly via L1 cache)
+            cuDoubleComplex w = W[w_offset + k];
+            cuDoubleComplex t = cuCmul(w, b);
+            
+            s_data[PAD(even_idx)] = cuCadd(a, t);
+            s_data[PAD(odd_idx)]  = cuCsub(a, t);
+        }
+        __syncwarp();
+    }
+    __syncthreads(); // Block barrier required before butterfly crosses warp boundaries
+    
+    // BLOCK SYNCHRONOUS PHASE (M=128 to B)
+    for (int M = 128; M <= B; M *= 2) {
+        int half_M = M / 2;
+        int w_offset = half_M - 1;
+        
+        // Co-operatively load twiddles for this stage
+        for (int i = tid; i < half_M; i += blockDim.x) {
+            s_twiddle[i] = W[w_offset + i];
+        }
+        __syncthreads(); // wait for twiddle load before butterfly
+        
+        // Each thread processes 2 butterflies (4 elements)
+        for (int step = 0; step < 2; step++) {
+            int vtid = tid + step * q;
+            int group  = vtid / half_M;
+            int k      = vtid % half_M;
+            int even_idx = group * M + k;
+            int odd_idx  = even_idx + half_M;
+            
+            cuDoubleComplex a = s_data[PAD(even_idx)];
+            cuDoubleComplex b = s_data[PAD(odd_idx)];
+            
+            cuDoubleComplex w = s_twiddle[k];
             cuDoubleComplex t = cuCmul(w, b);
             
             s_data[PAD(even_idx)] = cuCadd(a, t);
@@ -88,10 +155,12 @@ __global__ void cudaFFTSharedTileFinal(cuDoubleComplex* d_out, const cuDoubleCom
         __syncthreads();
     }
     
-    // Write back (unchanged)
-    if (blockOffset + tid < N && tid < B / 2) {
-        d_out[blockOffset + tid]       = s_data[PAD(tid)];
-        d_out[blockOffset + tid + B/2] = s_data[PAD(tid + B/2)];
+    // Write back to Global Memory (coalesced)
+    if (blockOffset + tid < N) {
+        d_out[blockOffset + tid]         = s_data[PAD(tid)];
+        d_out[blockOffset + tid + q]     = s_data[PAD(tid + q)];
+        d_out[blockOffset + tid + 2 * q] = s_data[PAD(tid + 2 * q)];
+        d_out[blockOffset + tid + 3 * q] = s_data[PAD(tid + 3 * q)];
     }
 }
 
@@ -144,7 +213,7 @@ void run_cuda_fft_final(const cuDoubleComplex* d_in, cuDoubleComplex* d_out, con
     
     int B = 2048; 
     int tileBlocks = N / B;
-    int tileThreads = B / 2;
+    int tileThreads = B / 4;
     
     int sharedElements = B + (B / 8) + 1; // sized with padding
     int twiddleElements = B / 2;          // sizes for s_twiddle
